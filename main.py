@@ -1,7 +1,14 @@
+import os
+import json
+from groq import Groq
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 app = FastAPI()
+
+client = Groq(
+    api_key=os.getenv("GROQ_API_KEY")
+)
 
 
 class Ticket(BaseModel):
@@ -19,90 +26,84 @@ def health():
 @app.post("/sort-ticket")
 def sort_ticket(ticket: Ticket):
 
-    msg = ticket.message.lower()
+    prompt = f"""
+You are an AI support-ticket triage system.
 
-    case_type = "other"
-    severity = "low"
-    department = "customer_support"
-    confidence = 0.60
+Analyze the customer message and return ONLY valid JSON.
 
-    # Phishing / Social Engineering
-    if any(word in msg for word in [
-        "otp",
-        "pin",
-        "password",
-        "scam",
-        "fraud",
-        "phishing",
-        "verification code"
-    ]):
-        case_type = "phishing_or_social_engineering"
-        severity = "critical"
-        department = "fraud_risk"
-        confidence = 0.95
+Customer Message:
+{ticket.message}
 
-    # Wrong Transfer
-    elif any(word in msg for word in [
-        "wrong number",
-        "wrong recipient",
-        "wrong account",
-        "mistaken transfer",
-        "sent money to wrong",
-        "sent cash to wrong"
-    ]):
-        case_type = "wrong_transfer"
-        severity = "high"
-        department = "dispute_resolution"
-        confidence = 0.90
+Output format:
 
-    # Payment Failed
-    elif any(word in msg for word in [
-        "payment failed",
-        "transaction failed",
-        "failed payment",
-        "balance deducted"
-    ]):
-        case_type = "payment_failed"
-        severity = "high"
-        department = "payments_ops"
-        confidence = 0.90
+{{
+  "case_type": "...",
+  "severity": "...",
+  "department": "...",
+  "agent_summary": "...",
+  "human_review_required": true,
+  "confidence": 0.95
+}}
 
-    # Refund Request
-    elif any(word in msg for word in [
-        "refund",
-        "money back",
-        "return payment"
-    ]):
-        case_type = "refund_request"
-        severity = "low"
-        department = "customer_support"
-        confidence = 0.85
+Rules:
 
-    # Agent Summary
-    if case_type == "wrong_transfer":
-        summary = "Customer sent money to the wrong recipient."
+Case Types:
+- phishing_or_social_engineering
+- payment_failed
+- wrong_transfer
+- refund_request
+- account_issue
+- technical_issue
+- fraud_report
+- other
 
-    elif case_type == "payment_failed":
-        summary = "Customer reports a failed payment with possible balance deduction."
+Severity:
+- low
+- medium
+- high
+- critical
 
-    elif case_type == "refund_request":
-        summary = "Customer is requesting a refund."
+Departments:
+- fraud_risk
+- payments_ops
+- dispute_resolution
+- customer_support
+- technical_support
+- account_security
 
-    elif case_type == "phishing_or_social_engineering":
-        summary = "Customer reports a possible phishing or social engineering attempt."
+human_review_required:
+true if severity is high/critical or fraud related.
 
-    else:
-        summary = "Customer reported a support issue."
+Return JSON only.
+"""
+
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        temperature=0
+    )
+
+    ai_result = response.choices[0].message.content
+
+    try:
+        result = json.loads(ai_result)
+
+    except Exception:
+        result = {
+            "case_type": "other",
+            "severity": "medium",
+            "department": "customer_support",
+            "agent_summary": "Unable to classify ticket.",
+            "human_review_required": True,
+            "confidence": 0.50
+        }
 
     return {
         "ticket_id": ticket.ticket_id,
-        "case_type": case_type,
-        "severity": severity,
-        "department": department,
-        "agent_summary": summary,
-        "human_review_required": (
-            severity == "critical"
-            or case_type == "phishing_or_social_engineering"
-        ),
-        "confidence": confidence
+        **result
     }
